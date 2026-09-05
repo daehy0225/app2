@@ -1,0 +1,1427 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>우리동네 여론모아 - AI 지역 문제 해결 광장</title>
+  
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- React 및 ReactDOM CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <!-- Babel CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.3/babel.min.js" crossorigin></script>
+
+  <!-- Firebase Legacy/Compat SDK -->
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore-compat.js"></script>
+
+  <!-- Google Fonts: Noto Sans KR & Space Grotesk -->
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+KR:wght@300;400;500;700;900&family=Space+Grotesk:wght@500;700;900&display=swap" rel="stylesheet">
+  
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['"Noto Sans KR"', 'sans-serif'],
+            display: ['"Space Grotesk"', 'sans-serif'],
+          },
+          colors: {
+            mint: {
+              50: '#f0fdf9',
+              100: '#ccfbf1',
+              200: '#99f6e4',
+              300: '#5eead4',
+              400: '#2dd4bf',
+              500: '#14b8a6',
+              600: '#0d9488',
+              700: '#0f766e',
+              800: '#115e59',
+              900: '#134e4a',
+              950: '#042f2e',
+            }
+          },
+          boxShadow: {
+            'mint-glow': '0 0 25px -2px rgba(45, 212, 191, 0.35)',
+            'mint-card': '0 8px 30px -4px rgba(15, 118, 110, 0.08), 0 0 1px rgba(15, 118, 110, 0.15)',
+            'mint-hover': '0 16px 35px -6px rgba(45, 212, 191, 0.25), 0 4px 12px -2px rgba(13, 148, 136, 0.15)',
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    body {
+      background-color: #e6f7f5;
+      background-image: radial-gradient(#14b8a6 1.2px, transparent 1.2px), radial-gradient(#0d9488 1.2px, #e6f7f5 1.2px);
+      background-size: 24px 24px;
+      background-position: 0 0, 12px 12px;
+      background-attachment: fixed;
+    }
+
+    .dot-pattern-card {
+      background-image: radial-gradient(rgba(20, 184, 166, 0.12) 1.5px, transparent 1.5px);
+      background-size: 12px 12px;
+    }
+
+    .mint-glass {
+      background: rgba(255, 255, 255, 0.88);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border: 1.5px solid rgba(153, 246, 228, 0.6);
+    }
+
+    .animate-fadeIn {
+      animation: fadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px) scale(0.98); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #5eead4; border-radius: 9999px; }
+    ::-webkit-scrollbar-thumb:hover { background: #2dd4bf; }
+  </style>
+</head>
+<body class="min-h-screen text-slate-800 font-sans antialiased selection:bg-mint-300 selection:text-mint-950">
+
+  <div id="root"></div>
+
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo } = React;
+
+    // ----------------------------------------------------------------------
+    // 0. Gemini API 연동 모듈
+    // ----------------------------------------------------------------------
+    const apiKey = ""; 
+
+    const callGeminiAPI = async (promptText, systemInstruction = "") => {
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+      const payload = {
+        contents: [{ parts: [{ text: promptText }] }],
+      };
+      
+      if (systemInstruction) {
+        payload.systemInstruction = { parts: [{ text: systemInstruction }] };
+      }
+
+      const delays = [1000, 2000, 4000, 8000, 16000];
+      for (let attempt = 0; attempt < 6; attempt++) {
+        try {
+          const res = await fetch(endpoint, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (!res.ok) throw new Error(`HTTP status ${res.status}`);
+          const data = await res.json();
+          const generatedText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (generatedText) return generatedText;
+          throw new Error("Invalid response format");
+        } catch (err) {
+          if (attempt === 5) throw err;
+          await new Promise(r => setTimeout(r, delays[attempt]));
+        }
+      }
+    };
+
+    // ----------------------------------------------------------------------
+    // 1. 웹사이트 배포용 글로벌 Firebase 공유 데이터베이스 세팅
+    // ----------------------------------------------------------------------
+    const defaultFirebaseConfig = {
+      apiKey: "AIzaSyAsMockPublicWebKeyForShare2026",
+      authDomain: "public-community-share.firebaseapp.com",
+      projectId: "public-community-share",
+      storageBucket: "public-community-share.appspot.com",
+      messagingSenderId: "100200300400",
+      appId: "1:100200300400:web:publiccommunityshare"
+    };
+
+    let firebaseConfig = defaultFirebaseConfig;
+    if (typeof __firebase_config !== 'undefined') {
+      try {
+        const injected = JSON.parse(__firebase_config);
+        if (injected && injected.apiKey) firebaseConfig = injected;
+      } catch (e) {}
+    }
+
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'public-shared-community-2026';
+    let db = null;
+    let auth = null;
+    let isFirebaseAvailable = false;
+
+    try {
+      if (!firebase.apps.length) {
+        firebase.initializeApp(firebaseConfig);
+      }
+      db = firebase.firestore();
+      auth = firebase.auth();
+      isFirebaseAvailable = true;
+    } catch (e) {
+      console.warn("Firebase 초기화:", e);
+    }
+
+    const DEFAULT_OPINIONS = [
+      {
+        id: "op-1",
+        author: "안전이웃",
+        content: "우리 동네 초등학교 인근 골목길이 야간에 어둡고 전동 킥보드 방치가 심해 위험합니다. 지자체 스마트 도로조명 설치 및 킥보드 전용 반납구역 지정을 제안합니다! 🚶‍♀️🔦",
+        category: "교통/안전",
+        likes: 31,
+        dislikes: 1,
+        createdAt: "2026-08-24T05:30:00.000Z",
+        comments: [
+          { id: "c1", author: "청소년활동가", content: "동감합니다! 야간 학원 하교 시간에 학생들이 많이 다니는데 조명 보강이 꼭 필요한 곳이에요.", createdAt: "2026-08-24T05:45:00.000Z" }
+        ]
+      }
+    ];
+
+    const DEFAULT_POLLS = [
+      {
+        id: "p-1",
+        creator: "지역지킴이",
+        question: "우리 동네 방치된 공터 부지, 주민과 청소년을 위한 공간으로 개편한다면 우선순위 1위는?",
+        category: "주민선호도",
+        options: [
+          { id: 'opt1', text: '청소년·주민 겸용 복합 문화/보드게임 카페 ☕', votes: 28 },
+          { id: 'opt2', text: '친환경 도시 숲 산책로 및 운동공원 🌳', votes: 19 },
+          { id: 'opt3', text: '주민 자율 도서관 및 열린 공부방 📚', votes: 12 }
+        ],
+        totalVotes: 59,
+        createdAt: "2026-08-24T04:10:00.000Z",
+      }
+    ];
+
+    const OPINION_CATEGORIES = ["전체", "환경/생태", "교통/안전", "청소년/문화", "복지/공공시설", "동네 건의", "기타"];
+    const POLL_CATEGORIES = ["전체", "찬반투표", "우선순위결정", "주민선호도", "정책제안"];
+
+    const CATEGORY_TAG_COLORS = {
+      "환경/생태": "bg-emerald-100 text-emerald-800 border-emerald-200",
+      "교통/안전": "bg-rose-100 text-rose-800 border-rose-200",
+      "청소년/문화": "bg-mint-100 text-mint-800 border-mint-200",
+      "복지/공공시설": "bg-teal-100 text-teal-800 border-teal-200",
+      "동네 건의": "bg-cyan-100 text-cyan-800 border-cyan-200",
+      "기타": "bg-slate-100 text-slate-700 border-slate-200",
+      "찬반투표": "bg-mint-200 text-mint-900 border-mint-300",
+      "우선순위결정": "bg-emerald-200 text-emerald-900 border-emerald-300",
+      "주민선호도": "bg-teal-200 text-teal-900 border-teal-300",
+      "정책제안": "bg-cyan-200 text-cyan-900 border-cyan-300"
+    };
+
+    const AVATAR_GRADIENTS = [
+      "from-mint-400 via-teal-500 to-emerald-600",
+      "from-teal-400 via-emerald-500 to-cyan-600",
+      "from-emerald-400 via-mint-500 to-teal-600",
+      "from-cyan-400 via-teal-500 to-mint-600"
+    ];
+
+    const getAvatarGradient = (name) => {
+      let hash = 0;
+      for (let i = 0; i < name.length; i++) hash = name.charCodeAt(i) + ((hash << 5) - hash);
+      return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+    };
+
+    function App() {
+      const [user, setUser] = useState(null);
+      const [activeTab, setActiveTab] = useState('opinions');
+      const [syncStatus, setSyncStatus] = useState("connecting");
+
+      const [opinions, setOpinions] = useState([]);
+      const [polls, setPolls] = useState([]);
+
+      const [searchQuery, setSearchQuery] = useState("");
+      const [opinionCategory, setOpinionCategory] = useState("전체");
+      const [pollCategory, setPollCategory] = useState("전체");
+      const [sortBy, setSortBy] = useState("latest");
+
+      const [showOpinionForm, setShowOpinionForm] = useState(false);
+      const [showPollForm, setShowPollForm] = useState(false);
+
+      const [opAuthor, setOpAuthor] = useState("");
+      const [opContent, setOpContent] = useState("");
+      const [opCategory, setOpCategory] = useState("환경/생태");
+
+      const [pollCreator, setPollCreator] = useState("");
+      const [pollQuestion, setPollQuestion] = useState("");
+      const [pollCat, setPollCat] = useState("찬반투표");
+      const [pollOptions, setPollOptions] = useState(["찬성 (동의) 🌿", "반대 (비동의) 🍂"]);
+
+      const [expandedComments, setExpandedComments] = useState({});
+      const [commentInputs, setCommentInputs] = useState({});
+
+      // AI 상태
+      const [isAiOverallLoading, setIsAiOverallLoading] = useState(false);
+      const [aiReportResult, setAiReportResult] = useState("");
+      const [isRefiningProposal, setIsRefiningProposal] = useState(false);
+      const [pollAiSyntheses, setPollAiSyntheses] = useState({});
+
+      const [votedItems, setVotedItems] = useState(() => {
+        try {
+          const saved = localStorage.getItem('local_voted_history_ai_shared');
+          return saved ? JSON.parse(saved) : {};
+        } catch { return {}; }
+      });
+
+      const [toastMessage, setToastMessage] = useState("");
+      const showToast = (msg) => {
+        setToastMessage(msg);
+        setTimeout(() => setToastMessage(""), 2200);
+      };
+
+      // ----------------------------------------------------------------------
+      // 2. 인증 & 실시간 클라우드 DB 연동 (모든 접속자가 연결됨)
+      // ----------------------------------------------------------------------
+      useEffect(() => {
+        const initAuth = async () => {
+          try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+              await auth.signInWithCustomToken(__initial_auth_token);
+            } else {
+              await auth.signInAnonymously();
+            }
+          } catch (err) {
+            console.warn("익명 인증 에러, 로컬 모드로 동작:", err);
+            setSyncStatus("offline");
+          }
+        };
+        if (isFirebaseAvailable) initAuth();
+
+        const unsubscribeAuth = auth ? auth.onAuthStateChanged((currentUser) => {
+          if (currentUser) setUser(currentUser);
+        }) : () => {};
+
+        return () => unsubscribeAuth();
+      }, []);
+
+      useEffect(() => {
+        if (!isFirebaseAvailable) {
+          const cachedOps = localStorage.getItem('local_opinions_ai_backup');
+          const cachedPolls = localStorage.getItem('local_polls_ai_backup');
+          setOpinions(cachedOps ? JSON.parse(cachedOps) : DEFAULT_OPINIONS);
+          setPolls(cachedPolls ? JSON.parse(cachedPolls) : DEFAULT_POLLS);
+          setSyncStatus("offline");
+          return;
+        }
+
+        if (!user) return;
+
+        // 클라우드 데이터베이스 경로 지정
+        const opinionsRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('opinions');
+        const pollsRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('polls');
+
+        // 실시간으로 모든 사용자의 입력 수신
+        const unsubscribeOpinions = opinionsRef.onSnapshot((snapshot) => {
+          const list = [];
+          snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+          if (list.length === 0 && snapshot.metadata.fromCache === false) {
+            DEFAULT_OPINIONS.forEach(async (op) => await opinionsRef.doc(op.id).set(op));
+          } else {
+            setOpinions(list);
+          }
+          setSyncStatus("live");
+        }, (err) => {
+          console.warn("의견 수신 오류:", err);
+          setSyncStatus("offline");
+        });
+
+        const unsubscribePolls = pollsRef.onSnapshot((snapshot) => {
+          const list = [];
+          snapshot.forEach(doc => list.push({ id: doc.id, ...doc.data() }));
+          if (list.length === 0 && snapshot.metadata.fromCache === false) {
+            DEFAULT_POLLS.forEach(async (p) => await pollsRef.doc(p.id).set(p));
+          } else {
+            setPolls(list);
+          }
+          setSyncStatus("live");
+        }, (err) => {
+          console.warn("투표 수신 오류:", err);
+          setSyncStatus("offline");
+        });
+
+        return () => {
+          unsubscribeOpinions();
+          unsubscribePolls();
+        };
+      }, [user]);
+
+      const saveOfflineBackup = (newOps, newPolls) => {
+        try {
+          if (newOps) localStorage.setItem('local_opinions_ai_backup', JSON.stringify(newOps));
+          if (newPolls) localStorage.setItem('local_polls_ai_backup', JSON.stringify(newPolls));
+        } catch (e) {}
+      };
+
+      const markAsVoted = (itemId, choice) => {
+        const updated = { ...votedItems, [itemId]: choice };
+        setVotedItems(updated);
+        localStorage.setItem('local_voted_history_ai_shared', JSON.stringify(updated));
+      };
+
+      // ----------------------------------------------------------------------
+      // 3. Gemini AI 핸들러
+      // ----------------------------------------------------------------------
+      const handleGenerateOverallAiReport = async () => {
+        if (opinions.length === 0) {
+          showToast("분석할 제안 데이터가 없습니다.");
+          return;
+        }
+
+        setIsAiOverallLoading(true);
+        setAiReportResult("");
+
+        const opinionSummaryText = opinions.map((op, idx) => 
+          `[안건 ${idx + 1}] 분류: ${op.category} | 작성자: ${op.author} | 공감: ${op.likes} | 내용: ${op.content}`
+        ).join("\n");
+
+        const prompt = `
+          당신은 지역 사회 문제 해결과 시민 참여를 돕는 AI 자치 정책 전문가입니다.
+          주민들이 제안한 다음 지역 안건들을 분석하고 실현 가능한 정책 리포트를 작성해 주세요.
+
+          [지역 문제 제안 데이터]:
+          ${opinionSummaryText}
+
+          [작성 가이드라인]:
+          1. 📌 **주요 지역 이슈 요약**: 가장 공감을 많이 받은 주요 문제를 2~3가지로 요약.
+          2. 💡 **실현 가능한 정책 대안**: 구청/시청이 연계할 수 있는 해결책과 주민 자율 참여 아이디어.
+          3. 🤝 **시민 참여 독려**: 따뜻하고 건전한 시민 자치 활동을 응원하는 멘트.
+          * 가독성 좋은 한국어 마크다운 리스트 형태로 출력해 주세요.
+        `;
+
+        try {
+          const result = await callGeminiAPI(prompt, "당신은 한국 지역 사회 자치와 문제 해결에 전문성을 가진 친절한 행정 컨설턴트입니다.");
+          setAiReportResult(result);
+          showToast("AI 여론 리포트가 성공적으로 생성되었습니다!");
+        } catch (err) {
+          showToast("AI 분석 중 오류가 발생했습니다.");
+          setAiReportResult("AI 리포트를 불러오지 못했습니다. 네트워크 상태를 확인한 후 다시 시도해 주세요.");
+        } finally {
+          setIsAiOverallLoading(false);
+        }
+      };
+
+      const handleRefineProposalWithAI = async () => {
+        if (!opContent.trim()) {
+          showToast("다듬을 아이디어나 메모를 먼저 입력해 주세요.");
+          return;
+        }
+
+        setIsRefiningProposal(true);
+        const prompt = `
+          다음은 주민이 작성한 지역 문제 제안 메모입니다.
+          이를 지자체 및 시민들에게 공감받을 수 있는 공식적이고 명확한 정책 제안서 문구로 정제해 주세요.
+
+          [카테고리]: ${opCategory}
+          [작성자 메모]: "${opContent}"
+
+          [요구사항]:
+          - 문제 현상, 위험성/불편함, 그리고 개선 방안이 명확히 드러나도록 2~4문장으로 깔끔하게 다듬으세요.
+          - 부가적인 설명 없이 정제된 본문 내용만 출력하세요.
+        `;
+
+        try {
+          const refined = await callGeminiAPI(prompt, "너는 행정 정책 제안서 작성을 돕는 문장 정제 AI 전문가다.");
+          if (refined) {
+            setOpContent(refined.trim());
+            showToast("✨ AI가 제안 문구를 전문적으로 다듬었습니다!");
+          }
+        } catch (err) {
+          showToast("문구 정제에 실패했습니다.");
+        } finally {
+          setIsRefiningProposal(false);
+        }
+      };
+
+      const handleAnalyzePollDebate = async (poll) => {
+        setPollAiSyntheses(prev => ({
+          ...prev,
+          [poll.id]: { loading: true, result: "" }
+        }));
+
+        const optionsText = poll.options.map(o => `- ${o.text} (${o.votes}표)`).join("\n");
+        const prompt = `
+          당신은 시민 자치 토론의 갈등 조율 전문가 AI입니다.
+          지역 정책 투표 현황을 바탕으로 주민 이해관계를 조율하는 리포트를 작성해 주세요.
+
+          [투표 질문]: "${poll.question}" (카테고리: ${poll.category})
+          [득표 현황]:
+          ${optionsText}
+
+          [작성 지침]:
+          1. 📊 **여론 흐름 분석**: 어떤 선택지가 가장 우세한지 현황 요약.
+          2. ⚖️ **상생 타협안 제안**: 표를 적게 받은 측의 의견도 포용할 수 있는 중간 지점의 상생/중재 아이디어 제시.
+          짧고 명확한 요점 정리 형태로 한국어로 간결하게 응답해 주세요.
+        `;
+
+        try {
+          const synthesis = await callGeminiAPI(prompt, "너는 갈등 해결과 타협안 제시에 능한 중재 AI 전문가다.");
+          setPollAiSyntheses(prev => ({
+            ...prev,
+            [poll.id]: { loading: false, result: synthesis }
+          }));
+          showToast("✨ AI 토론 분석 및 타협안이 생성되었습니다!");
+        } catch (err) {
+          setPollAiSyntheses(prev => ({
+            ...prev,
+            [poll.id]: { loading: false, result: "분석을 불러오는 중 오류가 발생했습니다." }
+          }));
+          showToast("분석 생성 실패");
+        }
+      };
+
+      // ----------------------------------------------------------------------
+      // 4. 게시글/투표 실시간 클라우드 등록 핸들러
+      // ----------------------------------------------------------------------
+      const handleOpinionSubmit = async (e) => {
+        e.preventDefault();
+        if (!opAuthor.trim() || !opContent.trim()) {
+          showToast("작성자명과 문제 해결 의견을 작성해 주세요.");
+          return;
+        }
+
+        const newOp = {
+          author: opAuthor.trim(),
+          content: opContent.trim(),
+          category: opCategory,
+          likes: 0,
+          dislikes: 0,
+          createdAt: new Date().toISOString(),
+          comments: []
+        };
+
+        if (isFirebaseAvailable && user) {
+          try {
+            await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('opinions').add(newOp);
+            showToast("🌿 의견이 클라우드에 공유되어 모두에게 게시되었습니다!");
+          } catch (err) {
+            showToast("등록 중 오류가 발생했습니다.");
+          }
+        } else {
+          const updatedOps = [{ id: `op-${Date.now()}`, ...newOp }, ...opinions];
+          setOpinions(updatedOps);
+          saveOfflineBackup(updatedOps, null);
+          showToast("의견이 저장되었습니다.");
+        }
+        setOpAuthor("");
+        setOpContent("");
+        setShowOpinionForm(false);
+      };
+
+      const handleOpinionReaction = async (id, type) => {
+        if (votedItems[id]) {
+          showToast("이미 반응을 클릭하셨습니다.");
+          return;
+        }
+
+        if (isFirebaseAvailable && user) {
+          try {
+            const docRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('opinions').doc(id);
+            const incrementValue = firebase.firestore.FieldValue.increment(1);
+            if (type === 'like') {
+              await docRef.update({ likes: incrementValue });
+            } else {
+              await docRef.update({ dislikes: incrementValue });
+            }
+            showToast("💚 공감이 실시간으로 모두에게 공유되었습니다!");
+          } catch (err) {
+            showToast("반응 저장 실패");
+          }
+        } else {
+          const updatedOps = opinions.map(op => {
+            if (op.id === id) {
+              return {
+                ...op,
+                likes: type === 'like' ? (op.likes || 0) + 1 : (op.likes || 0),
+                dislikes: type === 'dislike' ? (op.dislikes || 0) + 1 : (op.dislikes || 0)
+              };
+            }
+            return op;
+          });
+          setOpinions(updatedOps);
+          saveOfflineBackup(updatedOps, null);
+        }
+        markAsVoted(id, type);
+      };
+
+      const handleCommentSubmit = async (e, opinionId) => {
+        e.preventDefault();
+        const input = commentInputs[opinionId] || { author: '', content: '' };
+        
+        if (!input.author?.trim() || !input.content?.trim()) {
+          showToast("닉네임과 대화 내용을 써주세요.");
+          return;
+        }
+
+        const newComment = {
+          id: `comment-${Date.now()}`,
+          author: input.author.trim(),
+          content: input.content.trim(),
+          createdAt: new Date().toISOString()
+        };
+
+        if (isFirebaseAvailable && user) {
+          try {
+            const docRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('opinions').doc(opinionId);
+            const targetOp = opinions.find(o => o.id === opinionId);
+            if (targetOp) {
+              await docRef.update({ comments: [...(targetOp.comments || []), newComment] });
+              showToast("💬 댓글이 실시간으로 공유되었습니다.");
+            }
+          } catch (err) {
+            showToast("댓글 업로드 실패");
+          }
+        } else {
+          const updatedOps = opinions.map(op => {
+            if (op.id === opinionId) {
+              return { ...op, comments: [...(op.comments || []), newComment] };
+            }
+            return op;
+          });
+          setOpinions(updatedOps);
+          saveOfflineBackup(updatedOps, null);
+        }
+        setCommentInputs(prev => ({ ...prev, [opinionId]: { author: '', content: '' } }));
+      };
+
+      const handleCommentInputChange = (opinionId, field, value) => {
+        setCommentInputs(prev => ({
+          ...prev,
+          [opinionId]: { ...(prev[opinionId] || { author: '', content: '' }), [field]: value }
+        }));
+      };
+
+      const toggleComments = (opinionId) => {
+        setExpandedComments(prev => ({ ...prev, [opinionId]: !prev[opinionId] }));
+      };
+
+      const handleAddPollOption = () => {
+        if (pollOptions.length >= 4) return showToast("선택지는 최대 4개까지입니다.");
+        setPollOptions([...pollOptions, ""]);
+      };
+
+      const handleRemovePollOption = (index) => {
+        if (pollOptions.length <= 2) return showToast("최소 2개의 선택지가 필요합니다.");
+        setPollOptions(pollOptions.filter((_, i) => i !== index));
+      };
+
+      const handlePollOptionChange = (index, value) => {
+        const updated = [...pollOptions];
+        updated[index] = value;
+        setPollOptions(updated);
+      };
+
+      const handlePollSubmit = async (e) => {
+        e.preventDefault();
+        const cleanOptions = pollOptions.filter(opt => opt.trim() !== "");
+        if (!pollCreator.trim() || !pollQuestion.trim() || cleanOptions.length < 2) {
+          return showToast("질문 및 2개 이상의 문항을 채워주세요.");
+        }
+
+        const newPoll = {
+          creator: pollCreator.trim(),
+          question: pollQuestion.trim(),
+          category: pollCat,
+          options: cleanOptions.map((text, i) => ({ id: `opt-${i}`, text: text.trim(), votes: 0 })),
+          totalVotes: 0,
+          createdAt: new Date().toISOString()
+        };
+
+        if (isFirebaseAvailable && user) {
+          try {
+            await db.collection('artifacts').doc(appId).collection('public').doc('data').collection('polls').add(newPoll);
+            showToast("📊 실시간 투표가 등록되었습니다!");
+          } catch (err) {
+            showToast("투표 개설 실패");
+          }
+        } else {
+          const updatedPolls = [{ id: `poll-${Date.now()}`, ...newPoll }, ...polls];
+          setPolls(updatedPolls);
+          saveOfflineBackup(null, updatedPolls);
+        }
+        setPollCreator("");
+        setPollQuestion("");
+        setPollOptions(["찬성 (동의) 🌿", "반대 (비동의) 🍂"]);
+        setShowPollForm(false);
+      };
+
+      const handleVoteCast = async (pollId, optionId) => {
+        if (votedItems[pollId]) return showToast("이미 이 투표에 참여하셨습니다.");
+
+        if (isFirebaseAvailable && user) {
+          try {
+            const docRef = db.collection('artifacts').doc(appId).collection('public').doc('data').collection('polls').doc(pollId);
+            const targetPoll = polls.find(p => p.id === pollId);
+            if (targetPoll) {
+              const updatedOptions = targetPoll.options.map(opt => {
+                if (opt.id === optionId) return { ...opt, votes: (opt.votes || 0) + 1 };
+                return opt;
+              });
+              await docRef.update({
+                options: updatedOptions,
+                totalVotes: firebase.firestore.FieldValue.increment(1)
+              });
+              showToast("🗳️ 투표 표수가 실시간으로 수신되었습니다!");
+            }
+          } catch (err) {
+            showToast("투표 반영 오류");
+          }
+        } else {
+          const updatedPolls = polls.map(p => {
+            if (p.id === pollId) {
+              const updatedOptions = p.options.map(opt => {
+                if (opt.id === optionId) return { ...opt, votes: (opt.votes || 0) + 1 };
+                return opt;
+              });
+              return { ...p, options: updatedOptions, totalVotes: (p.totalVotes || 0) + 1 };
+            }
+            return p;
+          });
+          setPolls(updatedPolls);
+          saveOfflineBackup(null, updatedPolls);
+        }
+        markAsVoted(pollId, optionId);
+      };
+
+      const handleDeleteItem = async (id, type) => {
+        if (isFirebaseAvailable && user) {
+          try {
+            const pathSegment = type === 'opinion' ? 'opinions' : 'polls';
+            await db.collection('artifacts').doc(appId).collection('public').doc('data').collection(pathSegment).doc(id).delete();
+            showToast("삭제되었습니다.");
+          } catch (err) {
+            showToast("삭제 실패");
+          }
+        } else {
+          if (type === 'opinion') {
+            const updated = opinions.filter(op => op.id !== id);
+            setOpinions(updated);
+            saveOfflineBackup(updated, null);
+          } else {
+            const updated = polls.filter(p => p.id !== id);
+            setPolls(updated);
+            saveOfflineBackup(null, updated);
+          }
+          showToast("삭제되었습니다.");
+        }
+      };
+
+      const handleShareLink = () => {
+        const dummy = document.createElement("textarea");
+        document.body.appendChild(dummy);
+        dummy.value = window.location.href;
+        dummy.select();
+        document.execCommand('copy');
+        document.body.removeChild(dummy);
+        showToast("🌿 이 웹사이트 접속 주소가 클립보드에 복사되었습니다! 카톡으로 복사해 전송하세요.");
+      };
+
+      // ----------------------------------------------------------------------
+      // 5. 렌더링 데이터 준비
+      // ----------------------------------------------------------------------
+      const filteredOpinions = useMemo(() => {
+        return opinions
+          .filter(op => {
+            const matchesCat = opinionCategory === "전체" || op.category === opinionCategory;
+            const matchesSearch = op.content.toLowerCase().includes(searchQuery.toLowerCase()) || op.author.toLowerCase().includes(searchQuery.toLowerCase());
+            return matchesCat && matchesSearch;
+          })
+          .sort((a, b) => {
+            if (sortBy === "popular") return (b.likes || 0) - (a.likes || 0);
+            return new Date(b.createdAt) - new Date(a.createdAt);
+          });
+      }, [opinions, opinionCategory, searchQuery, sortBy]);
+
+      const filteredPolls = useMemo(() => {
+        return polls
+          .filter(p => {
+            const matchesCat = pollCategory === "전체" || p.category === pollCategory;
+            const matchesSearch = p.question.toLowerCase().includes(searchQuery.toLowerCase()) || p.creator.toLowerCase().includes(searchQuery.toLowerCase());
+            return matchesCat && matchesSearch;
+          })
+          .sort((a, b) => {
+            if (sortBy === "popular") return (b.totalVotes || 0) - (a.totalVotes || 0);
+            return new Date(b.createdAt) - new Date(a.createdAt);
+          });
+      }, [polls, pollCategory, searchQuery, sortBy]);
+
+      const totalOpinions = opinions.length;
+      const totalPolls = polls.length;
+      const totalVotesCount = useMemo(() => polls.reduce((sum, p) => sum + (p.totalVotes || 0), 0), [polls]);
+
+      useEffect(() => {
+        if (window.lucide) window.lucide.createIcons();
+      }, [activeTab, showOpinionForm, showPollForm, expandedComments, opinions, polls, syncStatus, isAiOverallLoading, aiReportResult, pollAiSyntheses]);
+
+      return (
+        <div className="min-h-screen pb-24">
+          
+          {toastMessage && (
+            <div className="fixed bottom-8 right-8 z-50 bg-mint-950 text-mint-200 px-6 py-3.5 rounded-2xl shadow-mint-glow border border-mint-500/40 backdrop-blur-xl flex items-center gap-3 animate-fadeIn">
+              <i data-lucide="sparkles" className="w-4 h-4 text-mint-300"></i>
+              <span className="text-xs font-bold">{toastMessage}</span>
+            </div>
+          )}
+
+          <header className="sticky top-0 z-40 bg-mint-950/90 backdrop-blur-xl border-b border-mint-800/60 shadow-lg text-white">
+            <div className="max-w-6xl mx-auto px-6 py-4 flex flex-col sm:flex-row items-center justify-between gap-4">
+              <div className="flex items-center gap-3.5">
+                <div className="bg-gradient-to-tr from-mint-400 via-teal-400 to-emerald-300 p-3 rounded-2xl text-mint-950 shadow-mint-glow font-extrabold">
+                  <i data-lucide="map-pin" className="w-6 h-6"></i>
+                </div>
+                <div>
+                  <h1 className="text-xl font-black tracking-tight flex items-center gap-2.5 text-mint-100">
+                    우리동네 여론모아 : AI 실시간 통합 광장
+                    {syncStatus === 'live' ? (
+                      <span className="inline-flex items-center gap-1.5 bg-mint-500/20 border border-mint-400/40 text-mint-300 text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                        <span className="w-2 h-2 rounded-full bg-mint-400 animate-ping"></span>
+                        전원 실시간 공유 중
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 bg-slate-800 border border-slate-700 text-slate-300 text-[10px] font-black px-2.5 py-0.5 rounded-full">
+                        Local Mode
+                      </span>
+                    )}
+                  </h1>
+                  <p className="text-[11px] text-mint-300/80 font-medium tracking-tight mt-0.5">이 사이트에 접속한 모든 주민과 친구들의 작성글이 실시간 동기화되어 보입니다</p>
+                </div>
+              </div>
+
+              <button
+                onClick={handleShareLink}
+                className="w-full sm:w-auto bg-gradient-to-r from-mint-400 to-teal-300 hover:from-mint-300 hover:to-teal-200 text-mint-950 font-black text-xs px-5 py-3 rounded-2xl shadow-mint-glow flex items-center justify-center gap-2 active:scale-95 transition-all"
+              >
+                <i data-lucide="share-2" className="w-4 h-4 text-mint-950"></i>
+                <span>웹사이트 초대 링크 복사</span>
+              </button>
+            </div>
+          </header>
+
+          <main className="max-w-6xl mx-auto px-6 py-8">
+            
+            <div className="flex bg-mint-900/10 p-1.5 rounded-2xl max-w-md mb-8 border border-mint-300/50 backdrop-blur-md shadow-sm">
+              <button
+                onClick={() => { setActiveTab('opinions'); setSearchQuery(""); }}
+                className={`flex-1 flex items-center justify-center gap-2.5 py-3 rounded-xl text-xs font-black transition-all duration-300 ${
+                  activeTab === 'opinions' 
+                    ? 'bg-mint-500 text-white shadow-mint-glow' 
+                    : 'text-mint-800 hover:text-mint-950'
+                }`}
+              >
+                <i data-lucide="message-square" className="w-4 h-4"></i>
+                지역 문제 제안 피드
+                <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black transition ${
+                  activeTab === 'opinions' ? 'bg-white/20 text-white' : 'bg-mint-200 text-mint-800'
+                }`}>
+                  {totalOpinions}
+                </span>
+              </button>
+
+              <button
+                onClick={() => { setActiveTab('polls'); setSearchQuery(""); }}
+                className={`flex-1 flex items-center justify-center gap-2.5 py-3 rounded-xl text-xs font-black transition-all duration-300 ${
+                  activeTab === 'polls' 
+                    ? 'bg-teal-600 text-white shadow-mint-glow' 
+                    : 'text-mint-800 hover:text-mint-950'
+                }`}
+              >
+                <i data-lucide="vote" className="w-4 h-4"></i>
+                시민 정책 투표소
+                <span className={`px-2 py-0.5 rounded-lg text-[10px] font-black transition ${
+                  activeTab === 'polls' ? 'bg-white/20 text-white' : 'bg-mint-200 text-mint-800'
+                }`}>
+                  {totalPolls}
+                </span>
+              </button>
+            </div>
+
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+              
+              <div className="lg:col-span-4 space-y-6">
+                
+                <div className="bg-mint-950 text-white p-6 rounded-3xl shadow-xl border border-mint-800 dot-pattern-card relative overflow-hidden">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-mint-400/10 rounded-full blur-2xl"></div>
+                  
+                  <div className="relative z-10">
+                    <h3 className="text-xs font-black text-mint-300 uppercase tracking-wider mb-5 flex items-center gap-2 font-display">
+                      <i data-lucide="pie-chart" className="w-4 h-4 text-mint-400"></i>
+                      REALTIME COMMUNITY
+                    </h3>
+                    
+                    <div className="grid grid-cols-2 gap-3.5 mb-4">
+                      <div className="bg-mint-900/60 p-4 rounded-2xl border border-mint-800/80">
+                        <span className="text-[10px] text-mint-300/80 block font-bold">제안된 동네 안건</span>
+                        <span className="text-2xl font-black text-white mt-1 block">{totalOpinions}건</span>
+                      </div>
+                      <div className="bg-mint-900/60 p-4 rounded-2xl border border-mint-800/80">
+                        <span className="text-[10px] text-mint-300/80 block font-bold">진행 중 정책투표</span>
+                        <span className="text-2xl font-black text-white mt-1 block">{totalPolls}개</span>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center justify-between bg-mint-500/10 p-4 rounded-2xl border border-mint-500/20">
+                      <span className="text-xs text-mint-200 font-extrabold flex items-center gap-2">
+                        <i data-lucide="check-circle-2" className="w-4 h-4 text-mint-400"></i> 누적 주민 참여 표수
+                      </span>
+                      <span className="text-base font-black text-mint-300">{totalVotesCount}표</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* ✨ Gemini AI 종합 요약 분석 패널 */}
+                <div className="mint-glass p-6 rounded-3xl shadow-mint-card border border-mint-300/60 relative overflow-hidden dot-pattern-card">
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className="text-xs font-black text-mint-950 flex items-center gap-1.5 uppercase">
+                      <i data-lucide="bot" className="w-4 h-4 text-mint-600"></i>
+                      Gemini AI 여론 리포터
+                    </h3>
+                    <span className="bg-mint-200 text-mint-900 text-[9px] font-black px-2 py-0.5 rounded-full">
+                      ✨ Smart
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-mint-800/80 font-medium leading-relaxed mb-4">
+                    주민들이 공유한 모든 제안과 의견을 종합 분석하여 핵심 이슈 요약 및 실현 가능한 해결 대안을 생성합니다.
+                  </p>
+
+                  <button
+                    onClick={handleGenerateOverallAiReport}
+                    disabled={isAiOverallLoading}
+                    className={`w-full py-3.5 px-4 rounded-2xl font-black text-[11px] flex items-center justify-center gap-2 text-white shadow-md transition-all ${
+                      isAiOverallLoading 
+                        ? 'bg-slate-400 cursor-not-allowed' 
+                        : 'bg-gradient-to-r from-mint-600 to-teal-600 hover:from-mint-700 hover:to-teal-700 active:scale-95 shadow-mint-glow'
+                    }`}
+                  >
+                    {isAiOverallLoading ? (
+                      <>
+                        <span className="w-3.5 h-3.5 rounded-full border-2 border-t-transparent border-white animate-spin"></span>
+                        AI가 주민 여론을 분석 중입니다...
+                      </>
+                    ) : (
+                      <>
+                        <i data-lucide="sparkles" className="w-3.5 h-3.5"></i>
+                        AI 종합 여론 및 대안 리포트 작성
+                      </>
+                    )}
+                  </button>
+
+                  {aiReportResult && (
+                    <div className="mt-4 p-4 bg-white/95 rounded-2xl border border-mint-200 shadow-sm animate-fadeIn max-h-80 overflow-y-auto">
+                      <div className="flex items-center justify-between pb-2 border-b border-mint-100 mb-2.5">
+                        <span className="text-[11px] font-black text-mint-900 flex items-center gap-1">
+                          <i data-lucide="sparkles" className="w-3.5 h-3.5 text-mint-600"></i> AI 자치 분석 보고서
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-700 leading-relaxed whitespace-pre-line font-medium">
+                        {aiReportResult}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-4">
+                  {activeTab === 'opinions' ? (
+                    !showOpinionForm ? (
+                      <button
+                        onClick={() => { setShowOpinionForm(true); setShowPollForm(false); }}
+                        className="w-full flex items-center justify-center gap-2 bg-mint-500 hover:bg-mint-600 text-white py-4 rounded-2xl text-xs font-black transition-all shadow-mint-card hover:shadow-mint-hover active:scale-95"
+                      >
+                        <i data-lucide="plus-circle" className="w-4 h-4"></i>
+                        지역 문제 제안하기 🌿
+                      </button>
+                    ) : (
+                      <div className="mint-glass p-6 rounded-3xl shadow-mint-card relative animate-fadeIn text-slate-800 dot-pattern-card">
+                        <button 
+                          onClick={() => setShowOpinionForm(false)} 
+                          className="absolute top-5 right-5 text-mint-700 hover:bg-mint-100 p-1.5 rounded-xl transition"
+                        >
+                          <i data-lucide="x" className="w-4 h-4"></i>
+                        </button>
+                        
+                        <h3 className="text-xs font-black text-mint-900 mb-4 flex items-center gap-1.5">
+                          <i data-lucide="edit-3" className="w-4 h-4 text-mint-600"></i>
+                          지역 문제 안건 등록
+                        </h3>
+                        
+                        <form onSubmit={handleOpinionSubmit} className="space-y-3.5 text-xs">
+                          <div>
+                            <label className="block font-bold text-mint-900 mb-1">제안자 (닉네임)</label>
+                            <input
+                              type="text" required placeholder="예: 동네지킴이" value={opAuthor}
+                              onChange={(e) => setOpAuthor(e.target.value)}
+                              className="w-full px-3.5 py-2.5 border border-mint-200 rounded-xl focus:border-mint-500 outline-none font-bold text-slate-800 bg-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold text-mint-900 mb-1">문제 영역 카테고리</label>
+                            <select
+                              value={opCategory} onChange={(e) => setOpCategory(e.target.value)}
+                              className="w-full px-3.5 py-2.5 border border-mint-200 rounded-xl outline-none bg-white font-bold text-slate-800 focus:border-mint-500"
+                            >
+                              {OPINION_CATEGORIES.filter(c => c !== "전체").map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block font-bold text-mint-900">문제 및 해결 방안 제안</label>
+                              <button
+                                type="button"
+                                onClick={handleRefineProposalWithAI}
+                                disabled={isRefiningProposal}
+                                className="text-[10px] bg-gradient-to-r from-mint-500 to-teal-500 text-white font-black px-2.5 py-1 rounded-lg hover:opacity-90 active:scale-95 transition flex items-center gap-1 shadow-sm"
+                              >
+                                {isRefiningProposal ? (
+                                  <span className="w-3 h-3 border-2 border-t-transparent border-white rounded-full animate-spin"></span>
+                                ) : (
+                                  <span>✨ AI 제안문구 다듬기</span>
+                                )}
+                              </button>
+                            </div>
+                            <textarea
+                              required rows={4} maxLength={200} placeholder="동네 문제점과 해결책을 적어주세요. 작성한 글은 실시간으로 모두의 화면에 올라갑니다!"
+                              value={opContent} onChange={(e) => setOpContent(e.target.value)}
+                              className="w-full px-3.5 py-2.5 border border-mint-200 rounded-xl focus:border-mint-500 outline-none resize-none font-medium text-slate-800 bg-white"
+                            ></textarea>
+                            <div className="text-right text-[10px] text-mint-600/80 mt-1 font-semibold">{opContent.length}/200자</div>
+                          </div>
+                          <button 
+                            type="submit" 
+                            className="w-full bg-mint-600 hover:bg-mint-700 text-white font-black py-3.5 rounded-xl shadow-md active:scale-95 transition"
+                          >
+                            광장에 제안 올리기 🚀
+                          </button>
+                        </form>
+                      </div>
+                    )
+                  ) : (
+                    !showPollForm ? (
+                      <button
+                        onClick={() => { setShowPollForm(true); setShowOpinionForm(false); }}
+                        className="w-full flex items-center justify-center gap-2 bg-teal-600 hover:bg-teal-700 text-white py-4 rounded-2xl text-xs font-black transition-all shadow-mint-card hover:shadow-mint-hover active:scale-95"
+                      >
+                        <i data-lucide="plus" className="w-4 h-4"></i>
+                        새 정책 찬반투표 개설 📊
+                      </button>
+                    ) : (
+                      <div className="mint-glass p-6 rounded-3xl shadow-mint-card relative animate-fadeIn text-slate-800 dot-pattern-card">
+                        <button 
+                          onClick={() => setShowPollForm(false)} 
+                          className="absolute top-5 right-5 text-mint-700 hover:bg-mint-100 p-1.5 rounded-xl transition"
+                        >
+                          <i data-lucide="x" className="w-4 h-4"></i>
+                        </button>
+                        
+                        <h3 className="text-xs font-black text-mint-900 mb-4 flex items-center gap-1.5">
+                          <i data-lucide="vote" className="w-4 h-4 text-teal-600"></i>
+                          주민 여론 투표 개설
+                        </h3>
+                        
+                        <form onSubmit={handlePollSubmit} className="space-y-3.5 text-xs">
+                          <div>
+                            <label className="block font-bold text-mint-900 mb-1">제안 단체/이름</label>
+                            <input
+                              type="text" required placeholder="예: 주민모임, 학생회" value={pollCreator}
+                              onChange={(e) => setPollCreator(e.target.value)}
+                              className="w-full px-3.5 py-2.5 border border-mint-200 rounded-xl focus:border-teal-500 outline-none font-bold text-slate-800 bg-white"
+                            />
+                          </div>
+                          <div>
+                            <label className="block font-bold text-mint-900 mb-1">투표 성격</label>
+                            <select
+                              value={pollCat} onChange={(e) => setPollCat(e.target.value)}
+                              className="w-full px-3.5 py-2.5 border border-mint-200 rounded-xl outline-none bg-white font-bold text-slate-800 focus:border-teal-500"
+                            >
+                              {POLL_CATEGORIES.filter(c => c !== "전체").map(c => <option key={c} value={c}>{c}</option>)}
+                            </select>
+                          </div>
+                          <div>
+                            <label className="block font-bold text-mint-900 mb-1">투표 안건 질문</label>
+                            <input
+                              type="text" required placeholder="예: 동네 산책로 쓰레기 수거함 추가 설치 건" value={pollQuestion}
+                              onChange={(e) => setPollQuestion(e.target.value)}
+                              className="w-full px-3.5 py-2.5 border border-mint-200 rounded-xl focus:border-teal-500 outline-none font-bold text-slate-800 bg-white"
+                            />
+                          </div>
+                          <div>
+                            <div className="flex justify-between items-center mb-1">
+                              <label className="block font-bold text-mint-900">선택지 (2~4개)</label>
+                              <button type="button" onClick={handleAddPollOption} className="text-[10px] text-teal-700 font-bold hover:underline">
+                                + 선택지 추가
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              {pollOptions.map((opt, i) => (
+                                <div key={i} className="flex items-center gap-1.5 animate-fadeIn">
+                                  <input
+                                    type="text" required placeholder={`선택지 ${i + 1}`} value={opt}
+                                    onChange={(e) => handlePollOptionChange(i, e.target.value)}
+                                    className="flex-1 px-3 py-2 border border-mint-200 rounded-xl outline-none focus:border-teal-500 font-bold text-slate-800 bg-white"
+                                  />
+                                  <button type="button" onClick={() => handleRemovePollOption(i)} className="text-slate-300 hover:text-rose-500 p-1">
+                                    <i data-lucide="x" className="w-3.5 h-3.5"></i>
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                          <button 
+                            type="submit" 
+                            className="w-full bg-teal-600 hover:bg-teal-700 text-white font-black py-3.5 rounded-xl shadow-md active:scale-95 transition"
+                          >
+                            시민 투표 시작하기 📣
+                          </button>
+                        </form>
+                      </div>
+                    )
+                  )}
+                </div>
+
+              </div>
+
+              {/* 오른쪽 피드 영역 */}
+              <div className="lg:col-span-8 space-y-5">
+                
+                <div className="mint-glass p-5 rounded-3xl shadow-mint-card border border-mint-200/80 space-y-3.5 dot-pattern-card">
+                  <div className="flex flex-col md:flex-row gap-3">
+                    <div className="relative flex-1">
+                      <i data-lucide="search" className="w-4 h-4 text-mint-600 absolute left-4 top-1/2 -translate-y-1/2"></i>
+                      <input
+                        type="text"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                        placeholder={activeTab === 'opinions' ? "지역 문제 및 제안자 검색..." : "투표 안건 검색..."}
+                        className="w-full pl-11 pr-4 py-2.5 border border-mint-200/80 rounded-2xl text-xs bg-white/90 text-slate-800 placeholder-mint-700/50 focus:border-mint-500 outline-none transition"
+                      />
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <i data-lucide="sliders-horizontal" className="w-4 h-4 text-mint-600 shrink-0"></i>
+                      <select
+                        value={sortBy}
+                        onChange={(e) => setSortBy(e.target.value)}
+                        className="border border-mint-200/80 rounded-2xl px-3 py-2.5 text-xs bg-white text-mint-900 font-bold outline-none"
+                      >
+                        <option value="latest">최신 등록순</option>
+                        <option value="popular">{activeTab === 'opinions' ? '공감 많은순' : '참여 많은순'}</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-thin">
+                    <i data-lucide="tag" className="w-3.5 h-3.5 text-mint-600 shrink-0"></i>
+                    {activeTab === 'opinions' ? (
+                      OPINION_CATEGORIES.map(cat => (
+                        <button
+                          key={cat} onClick={() => setOpinionCategory(cat)}
+                          className={`px-3 py-1.5 text-[10px] font-extrabold rounded-xl shrink-0 transition-all ${
+                            opinionCategory === cat 
+                              ? 'bg-mint-600 text-white shadow-sm' 
+                              : 'bg-white/80 text-mint-800 border border-mint-200 hover:bg-mint-100'
+                          }`}
+                        >
+                          {cat}
+                        </button>
+                      ))
+                    ) : (
+                      POLL_CATEGORIES.map(cat => (
+                        <button
+                          key={cat} onClick={() => setPollCategory(cat)}
+                          className={`px-3 py-1.5 text-[10px] font-extrabold rounded-xl shrink-0 transition-all ${
+                            pollCategory === cat 
+                              ? 'bg-teal-600 text-white shadow-sm' 
+                              : 'bg-white/80 text-mint-800 border border-mint-200 hover:bg-mint-100'
+                          }`}
+                        >
+                          {cat}
+                        </button>
+                      ))
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  
+                  {activeTab === 'opinions' && (
+                    filteredOpinions.length > 0 ? (
+                      filteredOpinions.map(op => {
+                        const commentsList = op.comments || [];
+                        const isCommentsExpanded = !!expandedComments[op.id];
+                        const commentInput = commentInputs[op.id] || { author: '', content: '' };
+                        const avatarGradient = getAvatarGradient(op.author || "Guest");
+                        const catBadgeColor = CATEGORY_TAG_COLORS[op.category] || "bg-mint-100 text-mint-800 border-mint-200";
+
+                        return (
+                          <div 
+                            key={op.id} 
+                            className="mint-glass p-6 rounded-3xl shadow-mint-card hover:shadow-mint-hover transition-all duration-300 animate-fadeIn text-slate-800 dot-pattern-card"
+                          >
+                            <div className="flex justify-between items-start gap-4 mb-3.5">
+                              <div className="flex items-center gap-3">
+                                <div className={`w-10 h-10 rounded-2xl bg-gradient-to-tr ${avatarGradient} text-white font-extrabold flex items-center justify-center text-xs shadow-sm`}>
+                                  {op.author ? op.author.charAt(0) : '?'}
+                                </div>
+                                <div>
+                                  <span className="font-extrabold text-mint-950 text-xs block">{op.author}</span>
+                                  <span className="text-[9px] text-mint-700/60 font-bold block mt-0.5">
+                                    {op.createdAt ? new Date(op.createdAt).toLocaleString('ko-KR', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '방금 전'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <span className={`px-3 py-1 rounded-xl text-[9px] font-black border ${catBadgeColor}`}>
+                                  {op.category}
+                                </span>
+                                <button 
+                                  onClick={() => handleDeleteItem(op.id, 'opinion')} 
+                                  className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition"
+                                >
+                                  <i data-lucide="trash-2" className="w-3.5 h-3.5"></i>
+                                </button>
+                              </div>
+                            </div>
+
+                            <p className="text-slate-800 text-xs sm:text-sm leading-relaxed mb-4 bg-white/90 p-4 rounded-2xl border border-mint-100 font-medium">
+                              {op.content}
+                            </p>
+
+                            <div className="flex items-center justify-between border-t border-mint-200/50 pt-3.5">
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={() => handleOpinionReaction(op.id, 'like')}
+                                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-mint-800 hover:bg-mint-100 hover:text-mint-950 text-[11px] font-extrabold transition"
+                                >
+                                  <i data-lucide="thumbs-up" className="w-3.5 h-3.5 text-mint-600"></i>
+                                  공감 <span className="text-mint-950 font-black">{op.likes || 0}</span>
+                                </button>
+
+                                <button
+                                  onClick={() => handleOpinionReaction(op.id, 'dislike')}
+                                  className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-slate-500 hover:bg-rose-50 hover:text-rose-600 text-[11px] font-extrabold transition"
+                                >
+                                  <i data-lucide="thumbs-down" className="w-3.5 h-3.5 text-rose-400"></i>
+                                  비공감 <span className="text-slate-800 font-black">{op.dislikes || 0}</span>
+                                </button>
+
+                                <button
+                                  onClick={() => toggleComments(op.id)}
+                                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-[11px] font-extrabold transition ${
+                                    isCommentsExpanded 
+                                      ? 'bg-mint-200 text-mint-900 font-black' 
+                                      : 'text-mint-800 hover:bg-mint-100'
+                                  }`}
+                                >
+                                  <i data-lucide="message-square" className="w-3.5 h-3.5"></i>
+                                  토론 댓글 <span className="text-mint-950 font-black">{commentsList.length}</span>
+                                </button>
+                              </div>
+                            </div>
+
+                            {/* 댓글 구역 */}
+                            {isCommentsExpanded && (
+                              <div className="mt-4 pt-4 border-t border-mint-200/60 bg-white/80 p-4 rounded-2xl border border-mint-100 animate-fadeIn">
+                                <div className="space-y-2.5 mb-3.5 max-h-56 overflow-y-auto pr-1">
+                                  {commentsList.length > 0 ? (
+                                    commentsList.map(comment => (
+                                      <div key={comment.id} className="flex gap-2 text-xs">
+                                        <i data-lucide="corner-down-right" className="w-3.5 h-3.5 text-mint-400 shrink-0 mt-1"></i>
+                                        <div className="flex-1 bg-mint-50/60 p-3 rounded-2xl border border-mint-100">
+                                          <div className="flex justify-between items-center mb-1">
+                                            <span className="font-extrabold text-mint-950 text-[11px]">{comment.author}</span>
+                                            <span className="text-[9px] text-mint-700/60 font-semibold">
+                                              {comment.createdAt ? new Date(comment.createdAt).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' }) : '방금 전'}
+                                            </span>
+                                          </div>
+                                          <p className="text-slate-700 text-[11px] font-medium">{comment.content}</p>
+                                        </div>
+                                      </div>
+                                    ))
+                                  ) : (
+                                    <p className="text-center py-3 text-[10px] text-mint-600 font-bold">
+                                      문제 해결을 위한 첫 의견 댓글을 남겨보세요! 🌱
+                                    </p>
+                                  )}
+                                </div>
+
+                                <form onSubmit={(e) => handleCommentSubmit(e, op.id)} className="pt-2 border-t border-mint-200/50">
+                                  <div className="flex gap-2">
+                                    <input
+                                      type="text" required maxLength={10} placeholder="이름"
+                                      value={commentInput.author || ""}
+                                      onChange={(e) => handleCommentInputChange(op.id, 'author', e.target.value)}
+                                      className="w-1/4 min-w-[65px] px-3 py-2 text-[11px] border border-mint-200 rounded-xl focus:border-mint-500 outline-none bg-white font-bold"
+                                    />
+                                    <div className="flex-1 relative flex items-center">
+                                      <input
+                                        type="text" required maxLength={100} placeholder="주민 토론 댓글 작성..."
+                                        value={commentInput.content || ""}
+                                        onChange={(e) => handleCommentInputChange(op.id, 'content', e.target.value)}
+                                        className="w-full pl-3.5 pr-9 py-2 text-[11px] border border-mint-200 rounded-xl focus:border-mint-500 outline-none bg-white font-semibold text-slate-800"
+                                      />
+                                      <button type="submit" className="absolute right-1.5 p-1 text-mint-600 hover:bg-mint-50 rounded-lg transition">
+                                        <i data-lucide="send" className="w-3.5 h-3.5"></i>
+                                      </button>
+                                    </div>
+                                  </div>
+                                </form>
+                              </div>
+                            )}
+
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="text-center py-16 mint-glass rounded-3xl border border-mint-200/80 shadow-mint-card">
+                        <p className="text-mint-800 text-xs font-bold">제안된 지역 문제가 아직 없습니다.</p>
+                      </div>
+                    )
+                  )}
+
+                  {/* [탭 2] 투표 피드 */}
+                  {activeTab === 'polls' && (
+                    filteredPolls.length > 0 ? (
+                      filteredPolls.map(poll => {
+                        const selectedChoice = votedItems[poll.id];
+                        const hasVoted = !!selectedChoice;
+                        const catBadgeColor = CATEGORY_TAG_COLORS[poll.category] || "bg-teal-100 text-teal-800 border-teal-200";
+                        const aiAnalysis = pollAiSyntheses[poll.id];
+
+                        return (
+                          <div key={poll.id} className="mint-glass p-6 rounded-3xl border border-mint-200/80 shadow-mint-card hover:shadow-mint-hover transition-all duration-300 animate-fadeIn text-slate-800 dot-pattern-card">
+                            <div className="flex justify-between items-start gap-4 mb-3.5">
+                              <div className="flex items-center gap-3">
+                                <div className="w-10 h-10 rounded-2xl bg-gradient-to-br from-teal-500 to-emerald-600 text-white flex items-center justify-center font-bold text-sm shadow-md">
+                                  <i data-lucide="vote" className="w-5 h-5"></i>
+                                </div>
+                                <div>
+                                  <span className="text-[11px] font-extrabold text-mint-950 block">{poll.creator}</span>
+                                  <span className="text-[9px] text-mint-700/60 font-semibold block mt-0.5">
+                                    {poll.createdAt ? new Date(poll.createdAt).toLocaleString('ko-KR') : '방금 전'}
+                                  </span>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5">
+                                <span className={`px-3 py-1 rounded-xl text-[9px] font-black border ${catBadgeColor}`}>
+                                  {poll.category}
+                                </span>
+                                <button 
+                                  onClick={() => handleDeleteItem(poll.id, 'poll')} 
+                                  className="p-1.5 text-slate-300 hover:text-rose-500 hover:bg-rose-50 rounded-xl transition"
+                                >
+                                  <i data-lucide="trash-2" className="w-3.5 h-3.5"></i>
+                                </button>
+                              </div>
+                            </div>
+
+                            <h4 className="text-sm font-extrabold text-mint-950 leading-snug mb-4">
+                              Q. {poll.question}
+                            </h4>
+
+                            <div className="space-y-2.5">
+                              {poll.options && poll.options.map(opt => {
+                                const total = poll.totalVotes || 0;
+                                const percent = total > 0 ? Math.round((opt.votes / total) * 100) : 0;
+                                const isUserChoice = selectedChoice === opt.id;
+
+                                return (
+                                  <div key={opt.id} className="relative">
+                                    <button
+                                      disabled={hasVoted}
+                                      onClick={() => handleVoteCast(poll.id, opt.id)}
+                                      className={`w-full text-left p-3.5 rounded-2xl border text-xs transition-all relative z-10 flex justify-between items-center ${
+                                        hasVoted 
+                                          ? isUserChoice 
+                                            ? 'border-teal-500 text-teal-950 font-black bg-teal-50/60 shadow-sm' 
+                                            : 'border-slate-100 text-slate-400' 
+                                          : 'border-mint-200/80 text-mint-950 hover:bg-mint-100/50 hover:border-mint-300 font-bold bg-white/60'
+                                      }`}
+                                    >
+                                      <span className="flex items-center gap-2">
+                                        {hasVoted && isUserChoice && <i data-lucide="check-circle-2" className="w-3.5 h-3.5 text-teal-600"></i>}
+                                        {opt.text}
+                                      </span>
+                                      <span className="font-black text-[11px] shrink-0">{percent}% ({opt.votes}표)</span>
+                                    </button>
+                                    
+                                    {hasVoted && (
+                                      <div 
+                                        className={`absolute top-0 left-0 h-full rounded-2xl transition-all duration-700 ${
+                                          isUserChoice ? 'bg-gradient-to-r from-mint-200 to-teal-200/80' : 'bg-slate-100/80'
+                                        }`}
+                                        style={{ width: `${percent}%` }}
+                                      ></div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* ✨ Gemini AI 찬반 토론 분석기 */}
+                            <div className="mt-4 pt-3 border-t border-mint-200/50">
+                              {!aiAnalysis ? (
+                                <button
+                                  onClick={() => handleAnalyzePollDebate(poll)}
+                                  className="w-full py-2 px-3 rounded-xl bg-teal-50 hover:bg-teal-100 text-teal-800 font-extrabold text-[11px] transition flex items-center justify-center gap-1.5 border border-teal-200/60 shadow-sm"
+                                >
+                                  <i data-lucide="sparkles" className="w-3.5 h-3.5 text-teal-500"></i>
+                                  <span>AI 여론 갈등 조율 & 타협안 분석</span>
+                                </button>
+                              ) : (
+                                <div className="p-4 bg-white/95 rounded-2xl border border-teal-200 shadow-sm animate-fadeIn">
+                                  <div className="flex items-center justify-between font-black text-teal-900 mb-2">
+                                    <span className="flex items-center gap-1.5 text-[11px]">
+                                      <i data-lucide="sparkles" className="w-3.5 h-3.5 text-teal-600"></i> AI 여론 중재 리포트
+                                    </span>
+                                  </div>
+                                  {aiAnalysis.loading ? (
+                                    <div className="flex items-center gap-2 text-slate-500 py-2 text-[11px] font-bold">
+                                      <span className="w-3.5 h-3.5 border-2 border-t-transparent border-teal-600 rounded-full animate-spin"></span>
+                                      투표율 현황 분석 중...
+                                    </div>
+                                  ) : (
+                                    <p className="text-[11px] text-slate-700 leading-relaxed font-medium whitespace-pre-line">
+                                      {aiAnalysis.result}
+                                    </p>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="flex items-center justify-between mt-4 text-[10px] text-mint-700/80 font-bold">
+                              <span>총 참여자: <span className="text-mint-950">{poll.totalVotes || 0}명</span></span>
+                            </div>
+                          </div>
+                        );
+                      })
+                    ) : (
+                      <div className="text-center py-16 mint-glass rounded-3xl border border-mint-200/80 shadow-mint-card">
+                        <p className="text-mint-800 text-xs font-bold">진행 중인 지역 안건 투표가 없습니다.</p>
+                      </div>
+                    )
+                  )}
+
+                </div>
+
+              </div>
+
+            </div>
+          </main>
+
+        </div>
+      );
+    }
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
